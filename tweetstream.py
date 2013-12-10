@@ -38,6 +38,8 @@ import socket
 import time
 import oauth2
 import urlparse
+import logging
+from datetime import datetime, timedelta
 
 class MissingConfiguration(Exception):
     """Raised when a configuration value is not found."""
@@ -69,6 +71,15 @@ class TweetStream(object):
             "twitter_stream_scheme", "https")
         self._twitter_stream_port = self._get_configuration_key(
             "twitter_stream_port", 443)
+        self._twitter_stream = None
+        self._stream_restart_scheduled = False
+        self._stream_restart_in_process = False
+        self._stream_restart_time = None
+        self._retry_delay = 5
+        self._retry_rate_limited_delay = 60
+        self._retry_before_established_delay = .25
+        self._timeout_handle = None
+        self._stall_timeout_handle = None
 
     def _get_configuration_key(self, key, default=None):
         """
@@ -102,7 +113,7 @@ class TweetStream(object):
             urlparse.parse_qs(parts.query).iteritems()
             if value
         ])
-        self.open_twitter_stream()
+        self.schedule_restart()
 
     def on_error(self, error):
         """ Just a wrapper for the error callback """
@@ -112,6 +123,20 @@ class TweetStream(object):
             raise error
 
     def open_twitter_stream(self):
+        logging.info("open_twitter_stream")
+        
+        self._stream_restart_scheduled = False
+
+        if self._stream_restart_time is not None and datetime.now() - self._stream_restart_time < timedelta(seconds=5):
+            self.schedule_restart(5)
+            return
+
+        self._stream_restart_time = datetime.now()
+        self._stream_restart_in_process = True
+
+        if self._twitter_stream:
+            self.close()
+
         """ Creates the client and watches stream """
         address_info = socket.getaddrinfo(self._twitter_stream_host,
             self._twitter_stream_port, socket.AF_INET, socket.SOCK_STREAM,
@@ -123,6 +148,7 @@ class TweetStream(object):
         if self._twitter_stream_scheme == "https":
             stream_class = SSLIOStream
         self._twitter_stream = stream_class(sock, io_loop=self._ioloop)
+        self._twitter_stream.set_close_callback(self.close_before_established_callback)
         self._twitter_stream.connect(socket_address, self.on_connect)
 
     def on_connect(self):
@@ -147,6 +173,7 @@ class TweetStream(object):
         headers["Host"] = self._twitter_stream_host
         headers["User-Agent"] = "TweetStream"
         headers["Accept"] = "*/*"
+        # headers["Accept-Encoding"] = "deflate, gzip"
         request = ["GET %s HTTP/1.1" % self._full_path]
         for key, value in headers.iteritems():
             request.append("%s: %s" % (key, value))
@@ -156,10 +183,25 @@ class TweetStream(object):
 
     def on_headers(self, response):
         """ Starts monitoring for results. """
+        self._twitter_stream.set_close_callback(lambda: None)
         status_line = response.splitlines()[0]
         response_code = status_line.replace("HTTP/1.1", "")
         response_code = int(response_code.split()[0].strip())
         if response_code != 200:
+            if response_code == 420:
+                logging.error('stream connect being rate limited. next try in %s seconds' % self._retry_rate_limited_delay)
+                self._stream_restart_in_process = False
+                self.schedule_restart(self._retry_rate_limited_delay)
+                self._retry_rate_limited_delay *= 2
+                return
+            elif response_code not in [401, 403, 404, 406, 413]:
+                logging.error('stream connect failed with response_code: %s. next try in %s seconds' % (response_code, self._retry_delay))
+                self._stream_restart_in_process = False
+                self.schedule_restart(self._retry_delay)
+                if self._retry_delay < 320:
+                    self._retry_delay *= 2
+                return
+
             exception_string = "Could not connect: %s\n%s" % (
                 status_line, response)
             headers = dict([
@@ -175,10 +217,23 @@ class TweetStream(object):
             return self._twitter_stream.read_bytes(
                 content_length, get_error_body)
             
+        logging.info("stream connection established")
+        self._stream_restart_in_process = False
+        self._retry_delay = 5
+        self._retry_rate_limited_delay = 60
+        self._retry_before_established_delay = .25
+
+        self._twitter_stream.set_close_callback(self.close_callback)
+        self.set_stall_timeout()
+
         self.wait_for_message()
 
     def wait_for_message(self):
         """ Throw a read event on the stack. """
+        if self._twitter_stream.closed():
+            logging.error("stream closed by remote host")
+            return
+
         self._twitter_stream.read_until("\r\n", self.on_result)
 
     def on_result(self, response):
@@ -189,6 +244,7 @@ class TweetStream(object):
         self._twitter_stream.read_bytes(length, self.parse_json)
 
     def parse_json(self, response):
+        self.set_stall_timeout()
         """ Checks JSON message """
         if not response.strip():
             # Empty line, happens sometimes for keep alive
@@ -225,3 +281,57 @@ class TweetStream(object):
         if self._callback:
             self._callback(response)
         self.wait_for_message()
+
+    def schedule_restart(self, seconds=0):
+        if not self._stream_restart_scheduled and not self._stream_restart_in_process:
+            self._stream_restart_scheduled = True
+            if seconds == 0:
+                self.open_twitter_stream()
+            else:
+                self.add_timeout(seconds, self.open_twitter_stream)
+
+    def set_stall_timeout(self):
+        self.remove_stall_timeout()
+        self._stall_timeout_handle = IOLoop.current().add_timeout(timedelta(seconds=90), self.stall_callback)
+
+    def remove_stall_timeout(self):
+        if self._stall_timeout_handle:
+            IOLoop.current().remove_timeout(self._stall_timeout_handle)
+            self._stall_timeout_handle = None
+
+    def add_timeout(self, seconds, callback):
+        self.remove_timeout()
+        self._timeout_handle = IOLoop.current().add_timeout(timedelta(seconds=seconds), callback)
+
+    def remove_timeout(self):
+        if self._timeout_handle:
+            IOLoop.current().remove_timeout(self._timeout_handle)
+            self._timeout_handle = None
+
+    def close_helper(self):
+        self.remove_timeout()
+        self.remove_stall_timeout()
+        self._twitter_stream.close()
+
+    def close(self):
+        self._twitter_stream.set_close_callback(lambda: None)
+        self.close_helper()
+
+    def close_before_established_callback(self):
+        logging.error('stream closed before establishing a connection')
+        self.close()
+        self._stream_restart_in_process = False
+        self.schedule_restart(self._retry_before_established_delay)
+        if self._retry_before_established_delay < 16:
+            self._retry_before_established_delay += .25
+
+    def close_callback(self):
+        logging.error('close callback')
+        self.close_helper()
+        self.schedule_restart()
+
+    def stall_callback(self):
+        logging.error('stream stalled. restarting')
+        self.close()
+        self.schedule_restart()
+
