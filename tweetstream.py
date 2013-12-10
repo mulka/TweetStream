@@ -292,20 +292,20 @@ class TweetStream(object):
 
     def set_stall_timeout(self):
         self.remove_stall_timeout()
-        self._stall_timeout_handle = IOLoop.current().add_timeout(timedelta(seconds=90), self.stall_callback)
+        self._stall_timeout_handle = self._ioloop.add_timeout(timedelta(seconds=90), self.stall_callback)
 
     def remove_stall_timeout(self):
         if self._stall_timeout_handle:
-            IOLoop.current().remove_timeout(self._stall_timeout_handle)
+            self._ioloop.remove_timeout(self._stall_timeout_handle)
             self._stall_timeout_handle = None
 
     def add_timeout(self, seconds, callback):
         self.remove_timeout()
-        self._timeout_handle = IOLoop.current().add_timeout(timedelta(seconds=seconds), callback)
+        self._timeout_handle = self._ioloop.add_timeout(timedelta(seconds=seconds), callback)
 
     def remove_timeout(self):
         if self._timeout_handle:
-            IOLoop.current().remove_timeout(self._timeout_handle)
+            self._ioloop.remove_timeout(self._timeout_handle)
             self._timeout_handle = None
 
     def close_helper(self):
