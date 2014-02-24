@@ -80,6 +80,7 @@ class TweetStream(object):
         self._retry_before_established_delay = .25
         self._timeout_handle = None
         self._stall_timeout_handle = None
+        self._current_iostream = None
 
     def _get_configuration_key(self, key, default=None):
         """
@@ -149,9 +150,12 @@ class TweetStream(object):
             stream_class = SSLIOStream
         self._twitter_stream = stream_class(sock, io_loop=self._ioloop)
         self._twitter_stream.set_close_callback(self.close_before_established_callback)
-        self._twitter_stream.connect(socket_address, self.on_connect)
+        self._current_iostream = str(self._twitter_stream)
+        self._twitter_stream.connect(socket_address, lambda: self.on_connect(self._current_iostream))
 
-    def on_connect(self):
+    def on_connect(self, id):
+        if id != self._current_iostream:
+            return
         parameters = {
             "oauth_token": self._token.key,
             "oauth_consumer_key": self._consumer.key,
@@ -179,9 +183,11 @@ class TweetStream(object):
             request.append("%s: %s" % (key, value))
         request = "\r\n".join(request) + "\r\n\r\n"
         self._twitter_stream.write(str(request))
-        self._twitter_stream.read_until("\r\n\r\n", self.on_headers)
+        self._twitter_stream.read_until("\r\n\r\n", lambda response: self.on_headers(response, id))
 
-    def on_headers(self, response):
+    def on_headers(self, response, id):
+        if id != self._current_iostream:
+            return
         """ Starts monitoring for results. """
         self._twitter_stream.set_close_callback(lambda: None)
         status_line = response.splitlines()[0]
@@ -226,39 +232,45 @@ class TweetStream(object):
         self._twitter_stream.set_close_callback(self.close_callback)
         self.set_stall_timeout()
 
-        self.wait_for_message()
+        self.wait_for_message(id)
 
-    def wait_for_message(self):
+    def wait_for_message(self, id):
         """ Throw a read event on the stack. """
         if self._twitter_stream.closed():
             logging.error("stream closed by remote host")
             return
 
-        self._twitter_stream.read_until("\r\n", self.on_result)
+        self._twitter_stream.read_until("\r\n", lambda response: self.on_result(response, id))
 
-    def on_result(self, response):
+    def on_result(self, response, id):
+        if id != self._current_iostream:
+            return
         """ Gets length of next message and reads it """
         if (response.strip() == ""):
-            return self.wait_for_message()
+            return self.wait_for_message(id)
         length = int(response.strip(), 16)
-        self._twitter_stream.read_bytes(length, self.parse_json)
+        self._twitter_stream.read_bytes(length, lambda response: self.parse_json(response, id))
 
-    def parse_json(self, response):
+    def parse_json(self, response, id):
+        if id != self._current_iostream:
+            return
         self.set_stall_timeout()
         """ Checks JSON message """
         if not response.strip():
             # Empty line, happens sometimes for keep alive
-            return self.wait_for_message()
+            return self.wait_for_message(id)
         try:
             response = json.loads(response)
         except ValueError:
             print "Invalid response:"
             print response
-            return self.wait_for_message()
+            return self.wait_for_message(id)
 
-        self.parse_response(response)
+        self.parse_response(response, id)
 
-    def parse_response(self, response):
+    def parse_response(self, response, id):
+        if id != self._current_iostream:
+            return
         """ Parse the twitter message """
         if self._clean_message:
             try:
@@ -268,7 +280,7 @@ class TweetStream(object):
                 avatar = response["user"]["profile_image_url_https"]
             except KeyError, exc:
                 print "Invalid tweet structure, missing %s" % exc
-                return self.wait_for_message()
+                return self.wait_for_message(id)
 
             response = {
                 "type": "tweet",
@@ -280,7 +292,7 @@ class TweetStream(object):
             }
         if self._callback:
             self._callback(response)
-        self.wait_for_message()
+        self.wait_for_message(id)
 
     def schedule_restart(self, seconds=0):
         if not self._stream_restart_scheduled and not self._stream_restart_in_process:
