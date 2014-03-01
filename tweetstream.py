@@ -81,6 +81,7 @@ class TweetStream(object):
         self._timeout_handle = None
         self._stall_timeout_handle = None
         self._current_iostream = None
+        self._partial_tweet = ''
 
     def _get_configuration_key(self, key, default=None):
         """
@@ -144,6 +145,7 @@ class TweetStream(object):
             0, 0)
         af, socktype, proto = address_info[0][:3]
         socket_address = address_info[0][-1]
+        logging.info('socket address:' + str(socket_address))
         sock = socket.socket(af, socktype, proto)
         stream_class = IOStream
         if self._twitter_stream_scheme == "https":
@@ -248,12 +250,14 @@ class TweetStream(object):
         """ Gets length of next message and reads it """
         if (response.strip() == ""):
             return self.wait_for_message(id)
+        # logging.info(response)
         length = int(response.strip(), 16)
         self._twitter_stream.read_bytes(length, lambda response: self.parse_json(response, id))
 
     def parse_json(self, response, id):
         if id != self._current_iostream:
             return
+        # if ord(response[-2]) != 13 or ord(response[-1]) != 10:
         self.set_stall_timeout()
         """ Checks JSON message """
         if not response.strip():
@@ -261,10 +265,20 @@ class TweetStream(object):
             return self.wait_for_message(id)
         try:
             response = json.loads(response)
+            self._partial_tweet = ''
         except ValueError:
-            print "Invalid response:"
-            print response
-            return self.wait_for_message(id)
+            # logging.info(response)
+            logging.info('_partial_tweet?')
+            # logging.info("Invalid response:")
+            # logging.info(response)
+            self._partial_tweet += response.strip()
+            try:
+                response = json.loads(self._partial_tweet)
+                logging.info('_partial_tweet success!')
+                self._partial_tweet = ''
+            except ValueError:
+                logging.info('_partial_tweet second fail')
+                return self.wait_for_message(id)
 
         self.parse_response(response, id)
 
