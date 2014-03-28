@@ -267,17 +267,11 @@ class TweetStream(object):
             response = json.loads(response)
             self._partial_tweet = ''
         except ValueError:
-            # logging.info(response)
-            logging.info('_partial_tweet?')
-            # logging.info("Invalid response:")
-            # logging.info(response)
             self._partial_tweet += response.strip()
             try:
                 response = json.loads(self._partial_tweet)
-                logging.info('_partial_tweet success!')
                 self._partial_tweet = ''
             except ValueError:
-                logging.info('_partial_tweet second fail')
                 return self.wait_for_message(id)
 
         self.parse_response(response, id)
