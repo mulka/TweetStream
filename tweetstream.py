@@ -334,8 +334,9 @@ class TweetStream(object):
         self._twitter_stream.close()
 
     def close(self):
-        self._twitter_stream.set_close_callback(lambda: None)
-        self.close_helper()
+        if self._twitter_stream:
+            self._twitter_stream.set_close_callback(lambda: None)
+            self.close_helper()
 
     def close_before_established_callback(self):
         logging.error('stream closed before establishing a connection')
