@@ -153,7 +153,8 @@ class TweetStream(object):
         self._twitter_stream = stream_class(sock, io_loop=self._ioloop)
         self._twitter_stream.set_close_callback(self.close_before_established_callback)
         self._current_iostream = str(self._twitter_stream)
-        self._twitter_stream.connect(socket_address, lambda: self.on_connect(self._current_iostream))
+        id = self._current_iostream
+        self._twitter_stream.connect(socket_address, lambda: self.on_connect(id))
 
     def on_connect(self, id):
         if id != self._current_iostream:
@@ -277,8 +278,6 @@ class TweetStream(object):
         self.parse_response(response, id)
 
     def parse_response(self, response, id):
-        if id != self._current_iostream:
-            return
         """ Parse the twitter message """
         if self._clean_message:
             try:
