@@ -268,7 +268,7 @@ class TweetStream(object):
             response = json.loads(response)
             self._partial_tweet = ''
         except ValueError:
-            self._partial_tweet += response.strip()
+            self._partial_tweet += response
             try:
                 response = json.loads(self._partial_tweet)
                 self._partial_tweet = ''
