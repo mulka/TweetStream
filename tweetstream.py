@@ -54,6 +54,7 @@ class TweetStream(object):
         self._ioloop = ioloop or IOLoop.instance()
         self._callback = None
         self._error_callback = None
+        self._rate_limited_callback = None
         self._clean_message = clean
         self._configuration = configuration
         consumer_key = self._get_configuration_key("twitter_consumer_key")
@@ -98,11 +99,12 @@ class TweetStream(object):
         """Pretty self explanatory."""
         self._error_callback = error_callback
 
-    def fetch(self, path, method="GET", callback=None):
+    def fetch(self, path, method="GET", callback=None, rate_limited_callback=None):
         """ Opens the request """
         parts = urlparse.urlparse(path)
         self._method = method
         self._callback = callback
+        self._rate_limited_callback = rate_limited_callback
         self._path = parts.path
         self._full_path = self._path
         self._parameters = {}
@@ -202,6 +204,8 @@ class TweetStream(object):
                 self._stream_restart_in_process = False
                 self.schedule_restart(self._retry_rate_limited_delay)
                 self._retry_rate_limited_delay *= 2
+                if self._rate_limited_callback:
+                    self._rate_limited_callback()
                 return
             elif response_code not in [401, 403, 404, 406, 413]:
                 logging.error('stream connect failed with response_code: %s. next try in %s seconds' % (response_code, self._retry_delay))
