@@ -65,7 +65,7 @@ class TweetStream(object):
         access_token = self._get_configuration_key("twitter_access_token")
         access_secret = self._get_configuration_key(
             "twitter_access_token_secret")
-        self._token = oauth2.Token(key=access_token, secret=access_secret)
+        self.set_token(access_token, access_secret)
         self._twitter_stream_host = self._get_configuration_key(
             "twitter_stream_host", "stream.twitter.com")
         self._twitter_stream_scheme = self._get_configuration_key(
@@ -83,6 +83,9 @@ class TweetStream(object):
         self._stall_timeout_handle = None
         self._current_iostream = None
         self._partial_tweet = ''
+
+    def set_token(self, access_token, access_secret):
+        self._token = oauth2.Token(key=access_token, secret=access_secret)
 
     def _get_configuration_key(self, key, default=None):
         """
