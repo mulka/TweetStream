@@ -36,7 +36,8 @@ from tornado.ioloop import IOLoop
 import json
 import socket
 import time
-import oauth2
+import oauthlib.oauth1
+import urllib
 import urlparse
 import logging
 from datetime import datetime, timedelta
@@ -57,21 +58,14 @@ class TweetStream(object):
         self._rate_limited_callback = None
         self._clean_message = clean
         self._configuration = configuration
-        consumer_key = self._get_configuration_key("twitter_consumer_key")
-        consumer_secret = self._get_configuration_key(
-            "twitter_consumer_secret")
-        self._consumer = oauth2.Consumer(
-            key=consumer_key, secret=consumer_secret)
+        self._consumer_key = self._get_configuration_key("twitter_consumer_key")
+        self._consumer_secret = self._get_configuration_key("twitter_consumer_secret")
         access_token = self._get_configuration_key("twitter_access_token")
-        access_secret = self._get_configuration_key(
-            "twitter_access_token_secret")
+        access_secret = self._get_configuration_key("twitter_access_token_secret")
         self.set_token(access_token, access_secret)
-        self._twitter_stream_host = self._get_configuration_key(
-            "twitter_stream_host", "stream.twitter.com")
-        self._twitter_stream_scheme = self._get_configuration_key(
-            "twitter_stream_scheme", "https")
-        self._twitter_stream_port = self._get_configuration_key(
-            "twitter_stream_port", 443)
+        self._twitter_stream_host = self._get_configuration_key("twitter_stream_host", "stream.twitter.com")
+        self._twitter_stream_scheme = self._get_configuration_key("twitter_stream_scheme", "https")
+        self._twitter_stream_port = self._get_configuration_key("twitter_stream_port", 443)
         self._twitter_stream = None
         self._stream_restart_scheduled = False
         self._stream_restart_in_process = False
@@ -85,7 +79,9 @@ class TweetStream(object):
         self._partial_tweet = ''
 
     def set_token(self, access_token, access_secret):
-        self._token = oauth2.Token(key=access_token, secret=access_secret)
+        self._oauth_client = oauthlib.oauth1.Client(
+            self._consumer_key, client_secret=self._consumer_secret,
+            resource_owner_key=access_token, resource_owner_secret=access_secret)
 
     def _get_configuration_key(self, key, default=None):
         """
@@ -164,24 +160,12 @@ class TweetStream(object):
     def on_connect(self, id):
         if id != self._current_iostream:
             return
-        parameters = {
-            "oauth_token": self._token.key,
-            "oauth_consumer_key": self._consumer.key,
-            "oauth_version": "1.0",
-            "oauth_nonce": oauth2.generate_nonce(),
-            "oauth_timestamp": int(time.time())
-        }
-        parameters.update(self._parameters)
-        request = oauth2.Request(
-            method="GET",
-            url="%s://%s%s" % (
-                self._twitter_stream_scheme,
-                self._twitter_stream_host,
-                self._path),
-            parameters=parameters)
-        signature_method = oauth2.SignatureMethod_HMAC_SHA1()
-        request.sign_request(signature_method, self._consumer, self._token)
-        headers = request.to_header()
+        url = "%s://%s%s?%s" % (
+            self._twitter_stream_scheme,
+            self._twitter_stream_host,
+            self._path,
+            urllib.urlencode(self._parameters))
+        uri, headers, body = self._oauth_client.sign(url)
         headers["Host"] = self._twitter_stream_host
         headers["User-Agent"] = "TweetStream"
         headers["Accept"] = "*/*"
