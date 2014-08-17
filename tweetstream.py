@@ -31,16 +31,24 @@ and `clean` is just a boolean (False by default) that will strip out
 basic data from the twitter message payload.
 """
 
+from __future__ import print_function
+
 from tornado.iostream import IOStream, SSLIOStream
 from tornado.ioloop import IOLoop
 import json
 import socket
 import time
 import oauthlib.oauth1
-import urllib
-import urlparse
 import logging
 from datetime import datetime, timedelta
+
+try:
+    # python 3
+    from urllib.parse import urlparse, parse_qs, urlencode
+except ImportError:
+    # python 2
+    from urlparse import urlparse, parse_qs
+    from urllib import urlencode
 
 class MissingConfiguration(Exception):
     """Raised when a configuration value is not found."""
@@ -100,7 +108,7 @@ class TweetStream(object):
 
     def fetch(self, path, method="GET", callback=None, rate_limited_callback=None):
         """ Opens the request """
-        parts = urlparse.urlparse(path)
+        parts = urlparse(path)
         self._method = method
         self._callback = callback
         self._rate_limited_callback = rate_limited_callback
@@ -113,7 +121,7 @@ class TweetStream(object):
         # throwing away empty or extra query arguments
         self._parameters = dict([
             (key, value[0]) for key, value in
-            urlparse.parse_qs(parts.query).iteritems()
+            parse_qs(parts.query).items()
             if value
         ])
         self.schedule_restart()
@@ -164,23 +172,24 @@ class TweetStream(object):
             self._twitter_stream_scheme,
             self._twitter_stream_host,
             self._path,
-            urllib.urlencode(self._parameters))
+            urlencode(self._parameters))
         uri, headers, body = self._oauth_client.sign(url)
         headers["Host"] = self._twitter_stream_host
         headers["User-Agent"] = "TweetStream"
         headers["Accept"] = "*/*"
         # headers["Accept-Encoding"] = "deflate, gzip"
         request = ["GET %s HTTP/1.1" % self._full_path]
-        for key, value in headers.iteritems():
+        for key, value in headers.items():
             request.append("%s: %s" % (key, value))
         request = "\r\n".join(request) + "\r\n\r\n"
-        self._twitter_stream.write(str(request))
-        self._twitter_stream.read_until("\r\n\r\n", lambda response: self.on_headers(response, id))
+        self._twitter_stream.write(request.encode())
+        self._twitter_stream.read_until(b"\r\n\r\n", lambda response: self.on_headers(response, id))
 
     def on_headers(self, response, id):
         if id != self._current_iostream:
             return
         """ Starts monitoring for results. """
+        response = response.decode(encoding='UTF-8')
         self._twitter_stream.set_close_callback(lambda: None)
         status_line = response.splitlines()[0]
         response_code = status_line.replace("HTTP/1.1", "")
@@ -234,12 +243,13 @@ class TweetStream(object):
             logging.error("stream closed by remote host")
             return
 
-        self._twitter_stream.read_until("\r\n", lambda response: self.on_result(response, id))
+        self._twitter_stream.read_until(b"\r\n", lambda response: self.on_result(response, id))
 
     def on_result(self, response, id):
         if id != self._current_iostream:
             return
         """ Gets length of next message and reads it """
+        response = response.decode(encoding='UTF-8')
         if (response.strip() == ""):
             return self.wait_for_message(id)
         # logging.info(response)
@@ -249,6 +259,7 @@ class TweetStream(object):
     def parse_json(self, response, id):
         if id != self._current_iostream:
             return
+        response = response.decode(encoding='UTF-8')
         # if ord(response[-2]) != 13 or ord(response[-1]) != 10:
         self.set_stall_timeout()
         """ Checks JSON message """
@@ -276,8 +287,8 @@ class TweetStream(object):
                 name = response["user"]["name"]
                 username = response["user"]["screen_name"]
                 avatar = response["user"]["profile_image_url_https"]
-            except KeyError, exc:
-                print "Invalid tweet structure, missing %s" % exc
+            except KeyError as exc:
+                print("Invalid tweet structure, missing %s" % exc)
                 return self.wait_for_message(id)
 
             response = {
