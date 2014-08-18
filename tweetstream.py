@@ -64,6 +64,7 @@ class TweetStream(object):
         self._callback = None
         self._error_callback = None
         self._rate_limited_callback = None
+        self._keep_alive_callback = None
         self._clean_message = clean
         self._configuration = configuration
         self._consumer_key = self._get_configuration_key("twitter_consumer_key")
@@ -106,12 +107,13 @@ class TweetStream(object):
         """Pretty self explanatory."""
         self._error_callback = error_callback
 
-    def fetch(self, path, method="GET", callback=None, rate_limited_callback=None):
+    def fetch(self, path, method="GET", callback=None, rate_limited_callback=None, keep_alive_callback=None):
         """ Opens the request """
         parts = urlparse(path)
         self._method = method
         self._callback = callback
         self._rate_limited_callback = rate_limited_callback
+        self._keep_alive_callback = keep_alive_callback
         self._path = parts.path
         self._full_path = self._path
         self._parameters = {}
@@ -265,6 +267,8 @@ class TweetStream(object):
         """ Checks JSON message """
         if not response.strip():
             # Empty line, happens sometimes for keep alive
+            if self._keep_alive_callback:
+                self._keep_alive_callback()
             return self.wait_for_message(id)
         try:
             response = json.loads(response)
