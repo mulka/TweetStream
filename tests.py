@@ -1,3 +1,5 @@
+from __future__ import print_function
+
 from tornado.testing import AsyncTestCase
 import tweetstream
 import logging
@@ -28,7 +30,7 @@ class TestTweetStream(AsyncTestCase):
         result = {}
         def error_callback(error):
             result["error"] = error
-            print error
+            print(error)
             self.stop()
 
         configuration = {
