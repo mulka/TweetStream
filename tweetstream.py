@@ -317,7 +317,7 @@ class TweetStream(object):
 
     def set_stall_timeout(self):
         self.remove_stall_timeout()
-        self._stall_timeout_handle = self._ioloop.add_timeout(timedelta(seconds=90), self.stall_callback)
+        self._stall_timeout_handle = self._ioloop.add_timeout(timedelta(seconds=30), self.stall_callback)
 
     def remove_stall_timeout(self):
         if self._stall_timeout_handle:
