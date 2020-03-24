@@ -31,8 +31,6 @@ and `clean` is just a boolean (False by default) that will strip out
 basic data from the twitter message payload.
 """
 
-from __future__ import print_function
-
 from tornado.iostream import IOStream, SSLIOStream
 from tornado.ioloop import IOLoop
 import json
@@ -50,9 +48,11 @@ except ImportError:
     from urlparse import urlparse, parse_qs
     from urllib import urlencode
 
+
 class MissingConfiguration(Exception):
     """Raised when a configuration value is not found."""
     pass
+
 
 class TweetStream(object):
     """ Twitter stream connection """
@@ -85,7 +85,7 @@ class TweetStream(object):
         self._timeout_handle = None
         self._stall_timeout_handle = None
         self._current_iostream = None
-        self._partial_tweet = ''
+        self._partial_json_bytes = b''
 
     def set_token(self, access_token, access_secret):
         self._oauth_client = oauthlib.oauth1.Client(
@@ -168,8 +168,8 @@ class TweetStream(object):
         self._twitter_stream.connect(socket_address, lambda: self.on_connect(id))
 
     def on_connect(self, id):
-        if id != self._current_iostream:
-            return
+        # if id != self._current_iostream:
+        #     return
         url = "%s://%s%s?%s" % (
             self._twitter_stream_scheme,
             self._twitter_stream_host,
@@ -185,11 +185,12 @@ class TweetStream(object):
             request.append("%s: %s" % (key, value))
         request = "\r\n".join(request) + "\r\n\r\n"
         self._twitter_stream.write(request.encode())
+
         self._twitter_stream.read_until(b"\r\n\r\n", lambda response: self.on_headers(response, id))
 
     def on_headers(self, response, id):
-        if id != self._current_iostream:
-            return
+        # if id != self._current_iostream:
+        #     return
         """ Starts monitoring for results. """
         response = response.decode(encoding='UTF-8')
         self._twitter_stream.set_close_callback(lambda: None)
@@ -222,6 +223,7 @@ class TweetStream(object):
             content_length = int(headers.get("content-length") or 0)
             if not content_length:
                 return self.on_error(Exception(exception_string))
+
             def get_error_body(content):
                 full_string = "%s\n%s" % (exception_string, content)
                 self.on_error(Exception(full_string))
@@ -235,7 +237,6 @@ class TweetStream(object):
         self._retry_before_established_delay = .25
 
         self._twitter_stream.set_close_callback(self.close_callback)
-        self.set_stall_timeout()
 
         self.wait_for_message(id)
 
@@ -245,25 +246,35 @@ class TweetStream(object):
             logging.error("stream closed by remote host")
             return
 
-        self._twitter_stream.read_until(b"\r\n", lambda response: self.on_result(response, id))
-
-    def on_result(self, response, id):
-        if id != self._current_iostream:
-            return
-        """ Gets length of next message and reads it """
-        response = response.decode(encoding='UTF-8')
-        if (response.strip() == ""):
-            return self.wait_for_message(id)
-        # logging.info(response)
-        length = int(response.strip(), 16)
-        self._twitter_stream.read_bytes(length, lambda response: self.parse_json(response, id))
-
-    def parse_json(self, response, id):
-        if id != self._current_iostream:
-            return
-        response = response.decode(encoding='UTF-8')
-        # if ord(response[-2]) != 13 or ord(response[-1]) != 10:
         self.set_stall_timeout()
+        self._twitter_stream.read_until(b'\r\n', lambda response: self.on_length(response, id))
+
+    def on_length(self, length_bytes, id):
+        # if id != self._current_iostream:
+        #     return
+        length_bytes = length_bytes[:-2]
+
+        if len(length_bytes) == 0:
+            self.wait_for_message(id)
+        else:
+            length = int(length_bytes, 16)
+            self.set_stall_timeout()
+            self._twitter_stream.read_bytes(length, lambda content: self.on_content(content, id))
+
+    def on_content(self, content, id):
+        # if id != self._current_iostream:
+        #     return
+        if content[-2:] == b'\r\n':
+            self._partial_json_bytes += content[:-2]
+            self.parse_json(self._partial_json_bytes, id)
+        else:
+            self._partial_json_bytes += content
+            self.set_stall_timeout()
+            self._twitter_stream.read_bytes(2, lambda spacer: self.on_spacer(spacer, id))
+
+    def parse_json(self, response_bytes, id):
+        self._partial_json_bytes = b''
+        response = response_bytes.decode(encoding='UTF-8')
         """ Checks JSON message """
         if not response.strip():
             # Empty line, happens sometimes for keep alive
@@ -272,14 +283,8 @@ class TweetStream(object):
             return self.wait_for_message(id)
         try:
             response = json.loads(response)
-            self._partial_tweet = ''
         except ValueError:
-            self._partial_tweet += response
-            try:
-                response = json.loads(self._partial_tweet)
-                self._partial_tweet = ''
-            except ValueError:
-                return self.wait_for_message(id)
+            return self.wait_for_message(id)
 
         self.parse_response(response, id)
 
@@ -305,6 +310,14 @@ class TweetStream(object):
             }
         if self._callback:
             self._callback(response)
+
+        self.set_stall_timeout()
+        self._twitter_stream.read_bytes(2, lambda spacer: self.on_spacer(spacer, id))
+
+    def on_spacer(self, spacer, id):
+        # if id != self._current_iostream:
+        #     return
+        assert spacer == b'\r\n'
         self.wait_for_message(id)
 
     def schedule_restart(self, seconds=0):
